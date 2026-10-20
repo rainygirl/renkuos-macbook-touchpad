@@ -16,19 +16,19 @@ cp "$HERE/"*.md "$HERE/macbook-touchpad.patch" "$STAGE/documentation/packages/ma
 cp -R "$HERE/src" "$HERE/tests" "$HERE/package" "$STAGE/documentation/packages/macbook-touchpad/"
 cat > "$STAGE/.PackageInfo" <<INFO
 name macbook_touchpad
-version 0.2.2-1
+version 0.2.6-1
 architecture x86_64
 summary "MacBook7,1 raw touchpad movement and scrolling"
-description "Experimental native Wellspring pointer support for MacBook7,1 USB 05ac:0236. Bypasses firmware mouse emulation and retains small movements on both axes. Single-finger movement, physical click, dragging with a second contact and two-finger vertical/horizontal scrolling. Retains macbook_fnkey fixes. Restart after installing or removing."
+description "Experimental native Wellspring pointer support for MacBook7,1 USB 05ac:0236. Bypasses firmware mouse emulation and retains small movements on both axes. Single-finger movement, tap to click, physical click, dragging with a second contact and two-finger vertical/horizontal scrolling. Retains macbook_fnkey fixes. Restart after installing or removing."
 vendor rainygirl
 packager "rainygirl <rainygirl@gmail.com>"
 licenses { "MIT" }
 copyrights { "2008-2011 Michael Lotz" "2026 rainygirl" }
-provides { macbook_touchpad = 0.2.2 }
+provides { macbook_touchpad = 0.2.6 }
 requires { haiku == r1~beta6_hrev60072_269_dirty
  macbook_fnkey == 1.0.0 }
 flags { system_package }
 INFO
 mkdir -p "$HERE/dist"
-package create -C "$STAGE" "$HERE/dist/macbook_touchpad-0.2.2-1-x86_64.hpkg"
-sha256sum "$HERE/dist/macbook_touchpad-0.2.2-1-x86_64.hpkg"
+package create -C "$STAGE" "$HERE/dist/macbook_touchpad-0.2.6-1-x86_64.hpkg"
+sha256sum "$HERE/dist/macbook_touchpad-0.2.6-1-x86_64.hpkg"

@@ -3,8 +3,8 @@
 [English](README.md) · [한국어](README.ko.md) · [日本語](README.ja.md)
 
 Native raw-coordinate touchpad support for the 2010 MacBook7,1 (USB 05ac:0236).
-Single-finger movement, physical click, dragging with the button held and
-two-finger vertical/horizontal scrolling.
+Single-finger movement, tap to click, physical click, dragging with the
+button held and two-finger vertical/horizontal scrolling.
 
 ## Install
 

@@ -210,6 +210,87 @@ main()
 	feed(late, p, out);
 	assert(out[0] == 1 && get(out + 1) == 1);
 	assert(get(out + 5) == 0 && get(out + 7) == 0);
+	// Tap to click. The pad sends two contact-free packets after every lift,
+	// so the synthesised press rides the first and the release the second.
+	auto lift = [&](MacBookTouchpad& t, uint8_t* o) {
+		feed(t, packet(0, 0, 0), o);	// first contact-free packet
+		int press = o[0];
+		feed(t, packet(0, 0, 0), o);	// second: must release
+		assert(o[0] == 0);
+		return press;
+	};
+	{	// A short stationary touch clicks, and clicks once per tap.
+		MacBookTouchpad tap;
+		for (int round = 0; round < 3; round++) {
+			for (int i = 0; i < 9; i++)
+				feed(tap, packet(500, 500), out);
+			assert(lift(tap, out) == 1);
+			// No further packet may re-assert the button.
+			feed(tap, packet(0, 0, 0), out);
+			assert(out[0] == 0);
+		}
+	}
+	{	// Resting a finger is not a tap, however still it is held.
+		MacBookTouchpad rest;
+		for (int i = 0; i < 200; i++)
+			feed(rest, packet(500, 500), out);
+		assert(lift(rest, out) == 0);
+	}
+	{	// A short touch that travels is a flick, not a tap.
+		MacBookTouchpad flick;
+		for (int i = 0; i < 9; i++)
+			feed(flick, packet(500 + i * 40, 500), out);
+		assert(lift(flick, out) == 0);
+	}
+	{	// Two fingers never tap: that is a scroll, not a click.
+		MacBookTouchpad two;
+		for (int i = 0; i < 9; i++)
+			feed(two, packet(500, 500, 2), out);
+		assert(lift(two, out) == 0);
+	}
+	{	// A physical click is reported by the pad; do not add a second one.
+		MacBookTouchpad phys;
+		for (int i = 0; i < 9; i++) {
+			auto q = packet(500, 500);
+			q[15] = 1;
+			feed(phys, q, out);
+			assert(out[0] == 1);
+		}
+		assert(lift(phys, out) == 0);
+	}
+	{	// A tap right at the limit still clicks; one packet more does not.
+		MacBookTouchpad edge;
+		for (int i = 0; i < MacBookTouchpad::kTapPackets; i++)
+			feed(edge, packet(500, 500), out);
+		assert(lift(edge, out) == 1);
+		MacBookTouchpad over;
+		for (int i = 0; i < MacBookTouchpad::kTapPackets + 1; i++)
+			feed(over, packet(500, 500), out);
+		assert(lift(over, out) == 0);
+	}
+	{	// A tap that drifts still clicks: a finger rolls as it taps. This is
+		// what made taps unreliable before kTapTravel was measured from the
+		// landing point rather than summed over every step.
+		for (int drift = 0; drift <= MacBookTouchpad::kTapTravel / 2; drift += 32) {
+			MacBookTouchpad roll;
+			for (int i = 0; i < 9; i++)
+				feed(roll, packet(500 + drift * i / 8, 500 + drift * i / 8), out);
+			assert(lift(roll, out) == 1);
+		}
+		// Past the limit it is a gesture, not a tap.
+		MacBookTouchpad far;
+		for (int i = 0; i < 9; i++)
+			feed(far, packet(500 + 40 * i, 500 + 40 * i), out);
+		assert(lift(far, out) == 0);
+	}
+	{	// Jitter around the landing point never adds up to a disqualification,
+		// however long it goes on, because travel is a distance and not a sum.
+		MacBookTouchpad jitter;
+		for (int i = 0; i < MacBookTouchpad::kTapPackets; i++)
+			feed(jitter, packet(500 + (i % 2 ? 40 : -40), 500), out);
+		assert(lift(jitter, out) == 1);
+	}
 	puts("PASS: quadrants, fractional conservation, shallow angles, lift, contacts, buttons, "
-		 "malformed reports, two-finger scrolling, centroid, transitions");
+		 "malformed reports, two-finger scrolling, centroid, transitions, tap to click, "
+		 "tap drift tolerance");
 }
