@@ -1,0 +1,14 @@
+macbook_fnkey
+macbook_touchpad
+rappmarket
+rbattery
+rbluesky
+rinstallwizard
+rpainter
+rretina
+rsmb
+rspectrum
+rtelevision
+rweather
+rworldradio
+rwriteroom

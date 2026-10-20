@@ -1,0 +1,7 @@
+name "Haiku Apps"
+vendor "rainygirl"
+summary "The R* applications and tools for Haiku"
+priority 1
+url "tag:rainygirl.com,2026:haiku-apps"
+identifier "tag:rainygirl.com,2026:haiku-apps"
+architecture x86_64

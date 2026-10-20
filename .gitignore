@@ -1,0 +1,8 @@
+dist/**/*.hpkg
+dist/*.hpkg
+dist/**/*.tar.gz
+dist/**/usb_hid
+dist/usb_hid
+.DS_Store
+VALIDATION.md
+evidence/

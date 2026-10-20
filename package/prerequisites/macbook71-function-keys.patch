@@ -1,0 +1,967 @@
+diff --git a/build/jam/images/definitions/regular b/build/jam/images/definitions/regular
+index ad4bbf3..fe1808e 100644
+--- a/build/jam/images/definitions/regular
++++ b/build/jam/images/definitions/regular
+@@ -338,6 +338,7 @@ SYSTEM_ADD_ONS_DRIVERS_POWER += [ FFilterByBuildFeatures
+ 	acpi_ac@x86,x86_64
+ 	acpi_battery@x86,x86_64
+ 	acpi_lid@x86,x86_64
++	mcp89_backlight@x86_64
+ ] ;
+ 
+ SYSTEM_ADD_ONS_FILE_SYSTEMS +=
+diff --git a/build/jam/packages/Haiku b/build/jam/packages/Haiku
+index 5de3de8..5d550bb 100644
+--- a/build/jam/packages/Haiku
++++ b/build/jam/packages/Haiku
+@@ -432,6 +432,7 @@ AddFilesToPackage add-ons input_server devices :
+ 	<input>wacom
+ 	;
+ AddFilesToPackage add-ons input_server filters :
++	macbook71_keys
+ 	padblocker
+ 	screen_saver
+ 	shortcut_catcher
+diff --git a/docs/hardware/macbook71-function-keys.md b/docs/hardware/macbook71-function-keys.md
+new file mode 100644
+index 0000000..54fffd4
+--- /dev/null
++++ b/docs/hardware/macbook71-function-keys.md
+@@ -0,0 +1,123 @@
++# MacBook7,1 function keys
++
++This change adds an opt-in-by-hardware-identity keyboard path and a native
++RenkuOS MCP89 panel backlight driver. It does not install nouveau, port NVIDIA's
++proprietary Linux driver, or add GeForce 320M modesetting/3D acceleration to the
++older Haiku `nvidia` graphics driver. The existing EFI framebuffer continues to
++provide display output.
++
++## Hardware gate
++
++The USB quirk requires all of:
++
++- SMBIOS vendor `Apple Inc.` and product exactly `MacBook7,1`;
++- built-in ANSI keyboard USB VID/PID `05ac:0236`, interface 0;
++- Apple Fn field at usage page `0x00ff`, usage `0x0003`, in its keyboard report.
++
++A missing SMBIOS string must fail matching. The prerequisite SMBIOS fix also
++retains the existing NULL-query wildcard semantics. Sharing the same keyboard
++USB ID on a different Mac is not enough to activate this quirk. ISO/JIS variants
++are not enabled without descriptor/hardware evidence.
++
++The backlight driver separately checks that exact SMBIOS identity, PCI VGA
++`10de:08a0`, a memory BAR with enough space, enabled memory decoding, NVAF chipset
++identity `0xaf`, and a live, internally consistent PWM pair. It never offers a
++force-load override. Only the PWM page is writable; no userspace MMIO mapping is
++exported. Invalid firmware/hardware state leaves the backlight unavailable.
++
++## Key behavior
++
++| Key | Without Fn | With Fn |
++| --- | --- | --- |
++| F1 / F2 | Panel brightness -5 / +5 percentage points | F1 / F2 |
++| F3 | Open Workspaces | F3 |
++| F4 | Open the system Applications folder in Tracker | F4 |
++| F5 / F6 | F5 / F6 (no keyboard backlight on this model) | F5 / F6 |
++| F7 / F8 / F9 | MediaPlayer previous / play-pause / next | F7 / F8 / F9 |
++| F10 / F11 / F12 | System mute / volume down / volume up | F10 / F11 / F12 |
++
++F3/F4 are RenkuOS equivalents chosen for the printed window/dashboard keys;
++this does not implement macOS Exposé or Dashboard. Media keys target the first
++window of an already running MediaPlayer, not arbitrary third-party players.
++The separate optical eject key and Fn+navigation keys are outside this patch.
++
++Translations are latched per physical function key until release. Changing Fn
++while holding a key cannot turn its repeat or key-up into a different key.
++The USB driver emits private raw codes, so the filter does not intercept regular
++F-keys or generic consumer keys from other keyboards. F5/F6 pass through.
++Actions run on a worker looper, not the input dispatch thread. Only brightness
++and volume repeat; repeated mute/play/launch actions are suppressed. Stale
++repeats are discarded and repeats are limited to ten per second.
++
++## NVIDIA register evidence and licensing
++
++The existing local Linux setup is documented in `machine/macbook-linux`, which
++points to [macbook-mint-nvidia-revival](https://github.com/rainygirl/macbook-mint-nvidia-revival),
++commit `f438b4e0caf7265813b22c080198919ca4dc1de1`.
++Its `mcp89-backlight/mcp89_backlight.c` records measurements on this machine:
++
++- BAR0 + `0x61c080`: existing PWM period; never written by the new driver.
++- BAR0 + `0x61c084`: low 24 bits are duty; bit 31 must be set on each write to
++  latch a change. Readback bit 30 is hardware maintained.
++- The observed Linux periods were 2966 and 24557; the implementation uses the
++  current period rather than either hardcoded value.
++
++That Linux module is GPL-2.0. No Linux module source, callbacks, Linux headers,
++or NVIDIA binary code is included here. The native implementation is new MIT
++code using the recorded register facts, PCI module APIs and device hooks.
++
++## Build
++
++From a configured RenkuOS x86_64 build directory, with the complete series
++applied to its source tree:
++
++```sh
++jam -q -j4 smbios usb_hid i2c_hid mcp89_backlight macbook71_keys
++```
++
++`i2c_hid` is included because it compiles the shared keyboard handler. The
++backlight is listed in regular x86_64 images, and the input filter in the Haiku
++package. The package/image targets also need validation before merge.
++
++## Tests and current validation limits
++
++Run the host tests from the source root:
++
++```sh
++python3 src/tests/add-ons/macbook71/run_tests.py
++```
++
++These compile the real translation helper and extracted production SMBIOS/
++backlight ioctl functions, with host-only type and kernel/MMIO mocks, under
++AddressSanitizer and UndefinedBehaviorSanitizer. They test all F-key mappings,
++Fn transitions, repeats, simultaneous keys, ordinary key pass-through, exact
++machine matches including missing strings, bounded PWM arithmetic, the write
++latch, unchanged period and invalid PWM/argument handling. These are not a
++native kernel build or hardware validation.
++
++As of 2026-10-16:
++
++- Read-only SSH inspection confirmed USB `05ac:0236`, PCI `10de:08a0` and the
++  active `/dev/graphics/framebuffer` path on the target.
++- Native x86_64 builds of all five targets pass. A missing `vm/vm.h` include
++  found by the native build was corrected. The Linux ASan/UBSan host suite passes.
++- The actual 156-byte HID descriptor contains Fn usage `0x00ff0003` in report 1.
++  PMC_BOOT_0 reads `0x0af000a2`; PWM period/duty read `0x00000b98`/`0x000008f1`.
++- The native driver was installed and its real ioctl path changed brightness
++  from 77% to 72% and restored 77%. A GET also succeeded after an independent
++  machine reboot. Actual luminance still requires user visual confirmation.
++- USB HID, SMBIOS and filter overrides were installed after saving the packaged
++  originals. After requesting an input_server restart, SSH became unavailable;
++  physical keyboard/panel verification and post-restart state are still pending.
++  This session did not reboot the machine or modify Wi-Fi files.
++
++Before considering the change ready to merge, build all targets and an image;
++confirm the gates on a different model and with missing SMBIOS strings; inspect
++the descriptor and PWM on MacBook7,1; exercise every row in the table, Fn release
++ordering, multi-key holds, modifier combinations, held mute/play keys, ordinary
++external keyboard F-keys, brightness endpoints, MediaPlayer absent/present,
++restart, reboot and suspend/resume. Verify actual panel luminance, not just MMIO
++readback. The backlight does not add persistence or suspend callbacks in this
++series; it reads the live period and rejects invalid state on each ioctl.
++
++The patch is a reviewable draft until native build and hardware checks pass.
+diff --git a/headers/private/drivers/mcp89_backlight.h b/headers/private/drivers/mcp89_backlight.h
+new file mode 100644
+index 0000000..53412be
+--- /dev/null
++++ b/headers/private/drivers/mcp89_backlight.h
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: MIT
++#ifndef _MCP89_BACKLIGHT_H
++#define _MCP89_BACKLIGHT_H
++
++#include <Drivers.h>
++
++#define MCP89_BACKLIGHT_DEVICE "/dev/power/mcp89_backlight"
++
++// All operations transfer one int32 percentage. ADJUST returns the new level.
++enum {
++	MCP89_GET_BRIGHTNESS = B_DEVICE_OP_CODES_END + 1,
++	MCP89_SET_BRIGHTNESS,
++	MCP89_ADJUST_BRIGHTNESS
++};
++
++#endif
+diff --git a/headers/private/input/MacBook71Keys.h b/headers/private/input/MacBook71Keys.h
+new file mode 100644
+index 0000000..20966ec
+--- /dev/null
++++ b/headers/private/input/MacBook71Keys.h
+@@ -0,0 +1,42 @@
++// SPDX-License-Identifier: MIT
++#ifndef _MACBOOK71_KEYS_H
++#define _MACBOOK71_KEYS_H
++
++#include <SupportDefs.h>
++
++// Private raw key codes, emitted only for the built-in MacBook7,1 keyboard.
++// Keep these separate from generic consumer keys and user shortcut bindings.
++static const uint32 kMacBook71KeyBase = 0x0f710000;
++
++class MacBook71Keys
++{
++public:
++	MacBook71Keys()
++	{
++		for (int i = 0; i < 12; i++)
++			fPressed[i] = 0;
++	}
++
++	uint32
++	Translate(uint32 key, bool down, bool fn)
++	{
++		if (key < 2 || key > 13)
++			return key;
++		uint32& pressed = fPressed[key - 2];
++		if (down) {
++			if (pressed == 0) {
++				// F5/F6 have no hardware function on this non-backlit keyboard.
++				pressed = fn || key == 6 || key == 7 ? key : kMacBook71KeyBase + key - 1;
++			}
++			return pressed;
++		}
++		uint32 released = pressed != 0 ? pressed : key;
++		pressed = 0;
++		return released;
++	}
++
++private:
++	uint32 fPressed[12];
++};
++
++#endif
+diff --git a/src/add-ons/input_server/filters/Jamfile b/src/add-ons/input_server/filters/Jamfile
+index 3cf8d79..46e48cc 100644
+--- a/src/add-ons/input_server/filters/Jamfile
++++ b/src/add-ons/input_server/filters/Jamfile
+@@ -5,3 +5,5 @@ SubInclude HAIKU_TOP src add-ons input_server filters screen_saver ;
+ SubInclude HAIKU_TOP src add-ons input_server filters shortcut_catcher ;
+ SubInclude HAIKU_TOP src add-ons input_server filters switch_workspace ;
+ SubInclude HAIKU_TOP src add-ons input_server filters padblocker ;
++
++SubInclude HAIKU_TOP src add-ons input_server filters macbook71 ;
+diff --git a/src/add-ons/input_server/filters/macbook71/Jamfile b/src/add-ons/input_server/filters/macbook71/Jamfile
+new file mode 100644
+index 0000000..6cbd7d8
+--- /dev/null
++++ b/src/add-ons/input_server/filters/macbook71/Jamfile
+@@ -0,0 +1,6 @@
++SubDir HAIKU_TOP src add-ons input_server filters macbook71 ;
++
++UsePrivateHeaders input drivers ;
++
++Addon macbook71_keys : MacBook71InputFilter.cpp
++	: be input_server [ TargetLibstdc++ ] [ TargetLibsupc++ ] ;
+diff --git a/src/add-ons/input_server/filters/macbook71/MacBook71InputFilter.cpp b/src/add-ons/input_server/filters/macbook71/MacBook71InputFilter.cpp
+new file mode 100644
+index 0000000..aa3b515
+--- /dev/null
++++ b/src/add-ons/input_server/filters/macbook71/MacBook71InputFilter.cpp
+@@ -0,0 +1,168 @@
++// SPDX-License-Identifier: MIT
++
++#include <InputServerFilter.h>
++#include <Entry.h>
++#include <Looper.h>
++#include <Message.h>
++#include <Messenger.h>
++#include <Roster.h>
++#include <OS.h>
++#include <MacBook71Keys.h>
++#include <mcp89_backlight.h>
++
++#include <image.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <new>
++#include <sys/ioctl.h>
++#include <syslog.h>
++#include <unistd.h>
++
++extern char** environ;
++
++class FunctionKeyWorker : public BLooper
++{
++public:
++	FunctionKeyWorker() : BLooper("MacBook7,1 function keys")
++	{
++	}
++
++	void
++	MessageReceived(BMessage* message)
++	{
++		int32 key;
++		if (message->FindInt32("function", &key) != B_OK) {
++			BLooper::MessageReceived(message);
++			return;
++		}
++		// Drop stale repeats rather than replaying them after a slow service.
++		bool repeat = false;
++		bigtime_t when = 0;
++		message->FindBool("repeat", &repeat);
++		message->FindInt64("when", &when);
++		if (repeat && system_time() - when > 250000)
++			return;
++
++		status_t status = B_OK;
++		if (key == 1 || key == 2) {
++			int fd = open(MCP89_BACKLIGHT_DEVICE, O_RDWR);
++			if (fd < 0)
++				status = errno;
++			else {
++				int32 step = key == 1 ? -5 : 5;
++				if (ioctl(fd, MCP89_ADJUST_BRIGHTNESS, &step, sizeof(step)) < 0)
++					status = errno;
++				close(fd);
++			}
++		} else if (key == 3) {
++			status = be_roster->Launch("application/x-vnd.Be-WORK");
++		} else if (key == 4) {
++			entry_ref ref;
++			status = get_ref_for_path("/boot/system/apps", &ref);
++			if (status == B_OK) {
++				BMessage refs(B_REFS_RECEIVED);
++				refs.AddRef("refs", &ref);
++				status = BMessenger("application/x-vnd.Be-TRAK").SendMessage(&refs);
++			}
++		} else if (key >= 7 && key <= 9) {
++			BMessage command(B_EXECUTE_PROPERTY);
++			command.AddSpecifier(key == 7 ? "Prev" : key == 8 ? "TogglePlaying" : "Next");
++			command.AddSpecifier("Window", (int32)0);
++			status = BMessenger("application/x-vnd.Haiku-MediaPlayer")
++						 .SendMessage(&command, (BHandler*)NULL, 100000);
++		} else if (key >= 10 && key <= 12) {
++			const char* args[] = {"/boot/system/bin/setvolume",
++								  key == 10	  ? "-t"
++								  : key == 11 ? "-d"
++											  : "-i",
++								  NULL};
++			thread_id thread = load_image(2, args, (const char**)environ);
++			if (thread < 0)
++				status = thread;
++			else {
++				status = resume_thread(thread);
++				if (status != B_OK)
++					kill_thread(thread);
++				if (status == B_OK) {
++					status_t result;
++					status = wait_for_thread(thread, &result);
++					if (status == B_OK)
++						status = result;
++				}
++			}
++		}
++		if (status != B_OK && status != B_ALREADY_RUNNING && !repeat)
++			syslog(LOG_WARNING, "MacBook7,1: F%" B_PRId32 " action failed: %" B_PRId32, key, status);
++	}
++};
++
++class MacBook71InputFilter : public BInputServerFilter
++{
++public:
++	MacBook71InputFilter() : fWorker(new (std::nothrow) FunctionKeyWorker), fStatus(B_NO_MEMORY)
++	{
++		for (int i = 0; i < 12; i++) {
++			fPressed[i] = false;
++			fLastAction[i] = 0;
++		}
++		if (fWorker != NULL) {
++			thread_id thread = fWorker->Run();
++			fStatus = thread < 0 ? thread : B_OK;
++		}
++	}
++
++	~MacBook71InputFilter()
++	{
++		if (fWorker != NULL && fWorker->Lock())
++			fWorker->Quit();
++	}
++
++	status_t
++	InitCheck()
++	{
++		return fStatus;
++	}
++
++	filter_result
++	Filter(BMessage* message, BList*)
++	{
++		bool down = message->what == B_UNMAPPED_KEY_DOWN;
++		if (!down && message->what != B_UNMAPPED_KEY_UP)
++			return B_DISPATCH_MESSAGE;
++		int32 key;
++		if (message->FindInt32("key", &key) != B_OK || key <= (int32)kMacBook71KeyBase ||
++			key > (int32)kMacBook71KeyBase + 12)
++			return B_DISPATCH_MESSAGE;
++		int32 function = key - kMacBook71KeyBase;
++		if (function == 5 || function == 6 || fStatus != B_OK)
++			return B_DISPATCH_MESSAGE;
++		int32 index = function - 1;
++		bool repeat = fPressed[index];
++		fPressed[index] = down;
++		if (!down)
++			return B_SKIP_MESSAGE;
++		bool repeatable = function == 1 || function == 2 || function == 11 || function == 12;
++		bigtime_t now = system_time();
++		if (repeat && (!repeatable || now - fLastAction[index] < 100000))
++			return B_SKIP_MESSAGE;
++		fLastAction[index] = now;
++		BMessage action('MB71');
++		action.AddInt32("function", function);
++		action.AddBool("repeat", repeat);
++		action.AddInt64("when", now);
++		fWorker->PostMessage(&action);
++		return B_SKIP_MESSAGE;
++	}
++
++private:
++	FunctionKeyWorker* fWorker;
++	status_t fStatus;
++	bool fPressed[12];
++	bigtime_t fLastAction[12];
++};
++
++extern "C" BInputServerFilter*
++instantiate_input_filter()
++{
++	return new (std::nothrow) MacBook71InputFilter;
++}
+diff --git a/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.cpp b/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.cpp
+index 76a16dc..f7fdf3b 100644
+--- a/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.cpp
++++ b/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.cpp
+@@ -55,12 +55,13 @@ debug_get_keyboard_config(int argc, char **argv)
+ 
+ //	#pragma mark -
+ 
+-
+ KeyboardProtocolHandler::KeyboardProtocolHandler(HIDReport &inputReport,
+ 	HIDReport *outputReport)
+ 	:
+ 	ProtocolHandler(inputReport.Device(), "input/keyboard/" DEVICE_PATH_SUFFIX
+ 		"/", 512),
++	fAppleFn(NULL),
++	fFnDown(false),
+ 	fInputReport(inputReport),
+ 	fOutputReport(outputReport),
+ 	fRepeatDelay(300000),
+@@ -85,6 +86,13 @@ KeyboardProtocolHandler::KeyboardProtocolHandler(HIDReport &inputReport,
+ 		if (!item->HasData())
+ 			continue;
+ 
++#ifdef USB_KDL
++		if (Device()->IsMacBook71Keyboard() && item->Usage() == 0x00ff0003 && !item->Array()) {
++			fAppleFn = item;
++			continue;
++		}
++#endif
++
+ 		if (item->UsagePage() == B_HID_USAGE_PAGE_KEYBOARD
+ 			|| item->UsagePage() == B_HID_USAGE_PAGE_CONSUMER
+ 			|| item->UsagePage() == B_HID_USAGE_PAGE_BUTTON) {
+@@ -479,6 +487,9 @@ KeyboardProtocolHandler::Control(uint32 *cookie, uint32 op, void *buffer,
+ void
+ KeyboardProtocolHandler::_WriteKey(uint32 key, bool down)
+ {
++	if (fAppleFn != NULL)
++		key = fMacBook71Keys.Translate(key, down, fFnDown);
++
+ 	raw_key_info info;
+ 	info.keycode = key;
+ 	info.is_keydown = down;
+@@ -531,6 +542,12 @@ KeyboardProtocolHandler::_ReadReport(bigtime_t timeout, uint32 *cookie)
+ 
+ 	TRACE("got keyboard input report\n");
+ 
++	// Read Fn from the same report, before releasing the report buffer.
++	// Latch each key's translation at key-down, including auto-repeat/key-up.
++	if (fAppleFn != NULL) {
++		fFnDown = fAppleFn->Extract() != B_OK || !fAppleFn->Valid() || fAppleFn->Data() != 0;
++	}
++
+ 	uint8 modifiers = 0;
+ 	for (uint32 i = 0; i < fModifierCount; i++) {
+ 		HIDReportItem *modifier = fModifiers[i];
+diff --git a/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.h b/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.h
+index 51f144e..a84fc54 100644
+--- a/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.h
++++ b/src/add-ons/kernel/drivers/input/hid_shared/KeyboardProtocolHandler.h
+@@ -9,7 +9,7 @@
+ #include "ProtocolHandler.h"
+ 
+ #include <lock.h>
+-
++#include <MacBook71Keys.h>
+ 
+ class HIDReportItem;
+ class HIDCollection;
+@@ -43,6 +43,9 @@ private:
+ 
+ private:
+ 			mutex				fLock;
++			HIDReportItem*		fAppleFn;
++			bool				fFnDown;
++			MacBook71Keys		fMacBook71Keys;
+ 
+ 			HIDReport &			fInputReport;
+ 			HIDReport *			fOutputReport;
+diff --git a/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.cpp b/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.cpp
+index 7902bbf..a72a2cf 100644
+--- a/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.cpp
++++ b/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.cpp
+@@ -15,6 +15,7 @@
+ #include "QuirkyDevices.h"
+ 
+ #include <usb/USB_hid.h>
++#include <smbios.h>
+ 
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -22,7 +23,6 @@
+ #include <unistd.h>
+ #include <new>
+ 
+-
+ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
+ 	size_t interfaceIndex, int32 quirkyIndex)
+ 	:	fStatus(B_NO_INIT),
+@@ -34,6 +34,7 @@ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
+ 		fParentCookie(-1),
+ 		fOpenCount(0),
+ 		fRemoved(false),
++		fMacBook71Keyboard(false),
+ 		fParser(this),
+ 		fProtocolHandlerCount(0),
+ 		fProtocolHandlerList(NULL)
+@@ -44,6 +45,16 @@ HIDDevice::HIDDevice(usb_device device, const usb_configuration_info *config,
+ 	const usb_device_descriptor *deviceDescriptor
+ 		= gUSBModule->get_device_descriptor(device);
+ 
++	// This product ID is shared with other Macs: the SMBIOS check is required.
++	if (deviceDescriptor != NULL && deviceDescriptor->vendor_id == 0x05ac &&
++		deviceDescriptor->product_id == 0x0236 && interfaceIndex == 0) {
++		smbios_module_info* smbios;
++		if (get_module(SMBIOS_MODULE_NAME, (module_info**)&smbios) == B_OK) {
++			fMacBook71Keyboard = smbios->match_vendor_product("Apple Inc.", "MacBook7,1");
++			put_module(SMBIOS_MODULE_NAME);
++		}
++	}
++
+ 	HIDWriter descriptorWriter;
+ 	bool hasFixedDescriptor = false;
+ 	if (quirkyIndex >= 0) {
+diff --git a/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.h b/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.h
+index a19f97c..d5fa021 100644
+--- a/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.h
++++ b/src/add-ons/kernel/drivers/input/usb_hid/HIDDevice.h
+@@ -41,6 +41,9 @@ public:
+ 			HIDParser &			Parser() { return fParser; }
+ 			ProtocolHandler *	ProtocolHandlerAt(uint32 index) const;
+ 
++			bool				IsMacBook71Keyboard() const
++									{ return fMacBook71Keyboard; }
++
+ 			// only to be used for the kernel debugger information
+ 			usb_pipe			InterruptPipe() const { return fInterruptPipe; }
+ 
+@@ -66,6 +69,7 @@ private:
+ 			int32				fParentCookie;
+ 			int32				fOpenCount;
+ 			bool				fRemoved;
++			bool				fMacBook71Keyboard;
+ 
+ 			HIDParser			fParser;
+ 
+diff --git a/src/add-ons/kernel/drivers/power/Jamfile b/src/add-ons/kernel/drivers/power/Jamfile
+index b929cd9..2bf8bff 100644
+--- a/src/add-ons/kernel/drivers/power/Jamfile
++++ b/src/add-ons/kernel/drivers/power/Jamfile
+@@ -7,3 +7,5 @@ SubInclude HAIKU_TOP src add-ons kernel drivers power acpi_lid ;
+ SubInclude HAIKU_TOP src add-ons kernel drivers power acpi_thermal ;
+ SubInclude HAIKU_TOP src add-ons kernel drivers power amd_thermal ;
+ SubInclude HAIKU_TOP src add-ons kernel drivers power pch_thermal ;
++
++SubInclude HAIKU_TOP src add-ons kernel drivers power mcp89_backlight ;
+diff --git a/src/add-ons/kernel/drivers/power/mcp89_backlight/Jamfile b/src/add-ons/kernel/drivers/power/mcp89_backlight/Jamfile
+new file mode 100644
+index 0000000..31ea292
+--- /dev/null
++++ b/src/add-ons/kernel/drivers/power/mcp89_backlight/Jamfile
+@@ -0,0 +1,6 @@
++SubDir HAIKU_TOP src add-ons kernel drivers power mcp89_backlight ;
++
++UsePrivateHeaders drivers ;
++UsePrivateKernelHeaders ;
++
++KernelAddon mcp89_backlight : mcp89_backlight.cpp ;
+diff --git a/src/add-ons/kernel/drivers/power/mcp89_backlight/mcp89_backlight.cpp b/src/add-ons/kernel/drivers/power/mcp89_backlight/mcp89_backlight.cpp
+new file mode 100644
+index 0000000..93b8336
+--- /dev/null
++++ b/src/add-ons/kernel/drivers/power/mcp89_backlight/mcp89_backlight.cpp
+@@ -0,0 +1,196 @@
++// SPDX-License-Identifier: MIT
++// Native RenkuOS implementation. Register addresses and latch semantics were
++// measured on this machine by macbook-mint-nvidia-revival (f438b4e0caf7).
++// No Linux driver code is imported; see docs/hardware/macbook71-function-keys.md.
++
++#include <KernelExport.h>
++#include <PCI.h>
++#include <lock.h>
++#include <vm/vm.h>
++#include <smbios.h>
++#include <mcp89_backlight.h>
++
++#include <string.h>
++
++static const uint32 kPWMPage = 0x61c000;
++static const uint32 kLevelMask = 0x00ffffff;
++static const char* sNames[] = {"power/mcp89_backlight", NULL};
++static area_id sArea = -1;
++static volatile uint32* sRegisters;
++static mutex sLock;
++
++int32 api_version = B_CUR_DRIVER_API_VERSION;
++
++extern "C" status_t
++init_hardware()
++{
++	return B_OK;
++}
++
++extern "C" status_t
++init_driver()
++{
++	smbios_module_info* smbios;
++	status_t status = get_module(SMBIOS_MODULE_NAME, (module_info**)&smbios);
++	if (status != B_OK)
++		return status;
++	bool matches = smbios->match_vendor_product("Apple Inc.", "MacBook7,1");
++	put_module(SMBIOS_MODULE_NAME);
++	if (!matches)
++		return B_NOT_SUPPORTED;
++
++	pci_module_info* pci;
++	status = get_module(B_PCI_MODULE_NAME, (module_info**)&pci);
++	if (status != B_OK)
++		return status;
++	pci_info info;
++	bool found = false;
++	for (int32 index = 0; pci->get_nth_pci_info(index, &info) == B_OK; index++) {
++		if (info.vendor_id == 0x10de && info.device_id == 0x08a0 && info.class_base == 3 &&
++			info.class_sub == 0 && (info.u.h0.base_register_flags[0] & 1) == 0 &&
++			info.u.h0.base_registers[0] != 0 &&
++			info.u.h0.base_register_sizes[0] >= kPWMPage + B_PAGE_SIZE &&
++			(pci->read_pci_config(info.bus, info.device, info.function, PCI_command, 2) &
++			 PCI_command_memory) != 0) {
++			found = true;
++			break;
++		}
++	}
++	put_module(B_PCI_MODULE_NAME);
++	if (!found)
++		return B_ENTRY_NOT_FOUND;
++
++	void* address;
++	area_id bootArea =
++		map_physical_memory("MCP89 identity", info.u.h0.base_registers[0], B_PAGE_SIZE,
++							B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA, &address);
++	if (bootArea < 0)
++		return bootArea;
++	uint32 identity = *(volatile uint32*)address;
++	delete_area(bootArea);
++	if (identity == 0xffffffff || ((identity >> 20) & 0x1ff) != 0xaf)
++		return B_NOT_SUPPORTED;
++
++	sArea = map_physical_memory(
++		"MCP89 backlight", (phys_addr_t)info.u.h0.base_registers[0] + kPWMPage, B_PAGE_SIZE,
++		B_ANY_KERNEL_ADDRESS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &address);
++	if (sArea < 0)
++		return sArea;
++	sRegisters = (volatile uint32*)address;
++	uint32 period = sRegisters[0x80 / 4];
++	uint32 duty = sRegisters[0x84 / 4];
++	if (period == 0xffffffff || duty == 0xffffffff || (period & kLevelMask) == 0 ||
++		(duty & kLevelMask) > (period & kLevelMask)) {
++		delete_area(sArea);
++		sArea = -1;
++		return B_NOT_SUPPORTED;
++	}
++	mutex_init(&sLock, "MCP89 backlight");
++	// Probe never changes the firmware's panel state or PWM period.
++	return B_OK;
++}
++
++extern "C" void
++uninit_driver()
++{
++	delete_area(sArea);
++	sArea = -1;
++	mutex_destroy(&sLock);
++}
++
++static status_t
++backlight_open(const char*, uint32, void** cookie)
++{
++	*cookie = NULL;
++	return B_OK;
++}
++
++static status_t
++backlight_close(void*)
++{
++	return B_OK;
++}
++
++static status_t
++backlight_control(void*, uint32 op, void* buffer, size_t size)
++{
++	if (op != MCP89_GET_BRIGHTNESS && op != MCP89_SET_BRIGHTNESS && op != MCP89_ADJUST_BRIGHTNESS)
++		return B_DEV_INVALID_IOCTL;
++	if (size != sizeof(int32))
++		return B_BAD_VALUE;
++	if (!IS_USER_ADDRESS(buffer))
++		return B_BAD_ADDRESS;
++	int32 level = 0;
++	if (op != MCP89_GET_BRIGHTNESS) {
++		if (user_memcpy(&level, buffer, sizeof(level)) != B_OK)
++			return B_BAD_ADDRESS;
++		if ((op == MCP89_SET_BRIGHTNESS && (level < 0 || level > 100)) ||
++			(op == MCP89_ADJUST_BRIGHTNESS && (level < -100 || level > 100)))
++			return B_BAD_VALUE;
++	}
++	mutex_lock(&sLock);
++	uint32 rawPeriod = sRegisters[0x80 / 4];
++	uint32 rawDuty = sRegisters[0x84 / 4];
++	uint32 period = rawPeriod & kLevelMask;
++	uint32 duty = rawDuty & kLevelMask;
++	if (rawPeriod == 0xffffffff || rawDuty == 0xffffffff || period == 0 || duty > period) {
++		mutex_unlock(&sLock);
++		return B_DEV_NOT_READY;
++	}
++	int32 current = (duty * 100 + period / 2) / period;
++	if (op == MCP89_GET_BRIGHTNESS)
++		level = current;
++	else {
++		if (op == MCP89_ADJUST_BRIGHTNESS) {
++			level += current;
++			// Hotkeys keep a visible minimum; explicit SET can turn it off.
++			if (level < 5)
++				level = 5;
++			if (level > 100)
++				level = 100;
++		}
++		uint32 value = (period * (uint32)level + 50) / 100;
++		// Bit 31 is a write latch, not a bit to preserve from a read.
++		sRegisters[0x84 / 4] = 0x80000000 | value;
++		(void)sRegisters[0x84 / 4]; // Complete the posted PCI write.
++	}
++	mutex_unlock(&sLock);
++	return user_memcpy(buffer, &level, sizeof(level));
++}
++
++static status_t
++backlight_read(void*, off_t, void*, size_t* size)
++{
++	*size = 0;
++	return B_NOT_ALLOWED;
++}
++
++static status_t
++backlight_write(void*, off_t, const void*, size_t* size)
++{
++	*size = 0;
++	return B_NOT_ALLOWED;
++}
++
++static device_hooks sHooks = {backlight_open,
++							  backlight_close,
++							  backlight_close,
++							  backlight_control,
++							  backlight_read,
++							  backlight_write,
++							  NULL,
++							  NULL,
++							  NULL,
++							  NULL};
++
++extern "C" const char**
++publish_devices()
++{
++	return sNames;
++}
++
++extern "C" device_hooks*
++find_device(const char* name)
++{
++	return strcmp(name, sNames[0]) == 0 ? &sHooks : NULL;
++}
+diff --git a/src/add-ons/kernel/generic/smbios/smbios.cpp b/src/add-ons/kernel/generic/smbios/smbios.cpp
+index b4a7f4e..f55e181 100644
+--- a/src/add-ons/kernel/generic/smbios/smbios.cpp
++++ b/src/add-ons/kernel/generic/smbios/smbios.cpp
+@@ -102,10 +102,10 @@ smbios_match_vendor_product(const char* vendor, const char* product)
+ 		return false;
+ 
+ 	bool match = true;
+-	if (vendor != NULL && sHardwareVendor != NULL)
+-		match = strcmp(vendor, sHardwareVendor) == 0;
+-	if (match && product != NULL && sHardwareProduct != NULL)
+-		match = strcmp(product, sHardwareProduct) == 0;
++	if (vendor != NULL)
++		match = sHardwareVendor != NULL && strcmp(vendor, sHardwareVendor) == 0;
++	if (match && product != NULL)
++		match = sHardwareProduct != NULL && strcmp(product, sHardwareProduct) == 0;
+ 	return match;
+ }
+ 
+diff --git a/src/tests/add-ons/macbook71/run_tests.py b/src/tests/add-ons/macbook71/run_tests.py
+new file mode 100644
+index 0000000..f67031b
+--- /dev/null
++++ b/src/tests/add-ons/macbook71/run_tests.py
+@@ -0,0 +1,110 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: MIT
++"""Compile real production logic with minimal host-only type/module stubs."""
++from pathlib import Path
++import subprocess, tempfile, re
++source=Path(__file__).resolve().parents[4]
++root=Path(__file__).resolve().parent
++def function(text,name):
++ start=text.index(name+'(')
++ # Include its static return declaration.
++ start=text.rfind('static ',0,start)
++ brace=text.index('{',start); depth=1;end=brace+1
++ while depth:
++  depth+=(text[end]=='{')-(text[end]=='}');end+=1
++ return text[start:end]
++with tempfile.TemporaryDirectory(prefix='macbook71-tests-') as tmp:
++ t=Path(tmp)
++ (t/'SupportDefs.h').write_text('#include <stdint.h>\ntypedef uint32_t uint32;\n')
++ subprocess.run(['c++','-std=c++11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined','-I'+str(t),'-I'+str(source/'headers/private/input'),str(root/'test_macbook71.cpp'),'-o',str(t/'keys')],check=True)
++ subprocess.run([str(t/'keys')],check=True)
++ text=(source/'src/add-ons/kernel/generic/smbios/smbios.cpp').read_text()
++ body=function(text,'smbios_match_vendor_product')
++ test='''
++#include <cstring>
++#include <cassert>
++#include <cstdio>
++static const char *sHardwareVendor, *sHardwareProduct;
++'''+body+'''
++int main() {
++ const char* vendors[] = {nullptr, "Apple Inc.", "Other"};
++ const char* products[] = {nullptr, "MacBook7,1", "MacBook6,1", "MacBook7,10"};
++ for (auto v: vendors) for (auto p: products) {
++  sHardwareVendor=v; sHardwareProduct=p;
++  assert(smbios_match_vendor_product("Apple Inc.", "MacBook7,1") ==
++   (v && p && !strcmp(v,"Apple Inc.") && !strcmp(p,"MacBook7,1")));
++  assert(!smbios_match_vendor_product(nullptr,nullptr));
++  assert(smbios_match_vendor_product("Apple Inc.",nullptr) == (v && !strcmp(v,"Apple Inc.")));
++  assert(smbios_match_vendor_product(nullptr,"MacBook7,1") == (p && !strcmp(p,"MacBook7,1")));
++ }
++ puts("PASS: exact SMBIOS match, missing firmware strings, wildcard semantics (12 machine identities)");
++}
++'''
++ (t/'smbios.cpp').write_text(test)
++ subprocess.run(['c++','-std=c++11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(t/'smbios.cpp'),'-o',str(t/'smbios')],check=True)
++ subprocess.run([str(t/'smbios')],check=True)
++ # Compile and exercise the actual ioctl function, mocking only kernel services/MMIO.
++ text=(source/'src/add-ons/kernel/drivers/power/mcp89_backlight/mcp89_backlight.cpp').read_text()
++ body=function(text,'backlight_control')
++ test='''
++#include <cstdint>
++#include <cstring>
++#include <cassert>
++#include <cstdio>
++using uint32=uint32_t; using int32=int32_t; using status_t=int;
++#define B_OK 0
++#define B_DEV_INVALID_IOCTL -1
++#define B_BAD_VALUE -2
++#define B_BAD_ADDRESS -3
++#define B_DEV_NOT_READY -4
++#define IS_USER_ADDRESS(p) ((p)!=nullptr)
++enum { MCP89_GET_BRIGHTNESS=1, MCP89_SET_BRIGHTNESS, MCP89_ADJUST_BRIGHTNESS };
++static const uint32 kLevelMask=0xffffff;
++static uint32 storage[64];
++static volatile uint32* sRegisters=storage;
++static int sLock;
++static void mutex_lock(int* l) { assert(*l==0); ++*l; }
++static void mutex_unlock(int* l) { assert(*l==1); --*l; }
++static int user_memcpy(void* to,const void* from,size_t size) { if(!to||!from)return B_BAD_ADDRESS;memcpy(to,from,size);return B_OK; }
++'''+body+'''
++int main() {
++ int32 value=50;
++ assert(backlight_control(nullptr,999,&value,sizeof(value))==B_DEV_INVALID_IOCTL);
++ assert(backlight_control(nullptr,1,nullptr,4)==B_BAD_ADDRESS);
++ assert(backlight_control(nullptr,1,&value,3)==B_BAD_VALUE);
++ for(uint32 period: {2966u,24557u,0xffffffu}) {
++  storage[32]=period;
++  for(int level=0;level<=100;++level) {
++   storage[33]=0x40000000|period;
++   value=level;
++   assert(backlight_control(nullptr,2,&value,4)==B_OK);
++   assert(storage[32]==period);
++   assert(storage[33]==(0x80000000|((period*level+50)/100)));
++   value=-1;
++   assert(backlight_control(nullptr,1,&value,4)==B_OK);
++   assert(value==level);
++  }
++  value=5; assert(backlight_control(nullptr,3,&value,4)==B_OK && value==100);
++  storage[33]=0;value=-5;
++  assert(backlight_control(nullptr,3,&value,4)==B_OK && value==5);
++ }
++ for(int level: {-101,-1,101}) {
++  value=level;uint32 before=storage[33];
++  assert(backlight_control(nullptr,2,&value,4)==B_BAD_VALUE && storage[33]==before);
++ }
++ for(uint32 period: {0u,0xffffffffu}) {
++  storage[32]=period;storage[33]=0;
++  value=50;assert(backlight_control(nullptr,2,&value,4)==B_DEV_NOT_READY);
++  assert(storage[33]==0);
++ }
++ storage[32]=100;storage[33]=101;value=50;
++ assert(backlight_control(nullptr,2,&value,4)==B_DEV_NOT_READY);
++ assert(sLock==0);
++ puts("PASS: native ioctl bounds, latch writes, period preservation, unavailable PWM and integer overflow boundaries");
++}
++'''
++ test=test.replace('#include <cstdio>','#include <cstdio>\n#include <initializer_list>')
++ (t/'pwm.cpp').write_text(test)
++ subprocess.run(['c++','-std=c++11','-Wall','-Wextra','-Werror','-fsanitize=address,undefined',str(t/'pwm.cpp'),'-o',str(t/'pwm')],check=True)
++ subprocess.run([str(t/'pwm')],check=True)
++print('Host logic tests passed. These do not replace a Haiku build or physical keyboard/panel tests.')
+diff --git a/src/tests/add-ons/macbook71/test_macbook71.cpp b/src/tests/add-ons/macbook71/test_macbook71.cpp
+new file mode 100644
+index 0000000..7e5a8fe
+--- /dev/null
++++ b/src/tests/add-ons/macbook71/test_macbook71.cpp
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: MIT
++#include <assert.h>
++#include <stdio.h>
++#include <MacBook71Keys.h>
++
++int
++main()
++{
++	for (unsigned key = 2; key <= 13; key++) {
++		for (int fn = 0; fn <= 1; fn++) {
++			MacBook71Keys keys;
++			unsigned expected = fn || key == 6 || key == 7 ? key : kMacBook71KeyBase + key - 1;
++			assert(keys.Translate(key, true, fn) == expected);
++			// A changed Fn state must not change a held key, its repeats or its release.
++			assert(keys.Translate(key, true, !fn) == expected);
++			assert(keys.Translate(key, false, !fn) == expected);
++			// The next press must use the new Fn state.
++			unsigned next = !fn || key == 6 || key == 7 ? key : kMacBook71KeyBase + key - 1;
++			assert(keys.Translate(key, true, !fn) == next);
++			assert(keys.Translate(key, false, fn) == next);
++		}
++	}
++	MacBook71Keys keys;
++	assert(keys.Translate(2, true, false) == kMacBook71KeyBase + 1);
++	assert(keys.Translate(3, true, true) == 3);
++	assert(keys.Translate(2, false, true) == kMacBook71KeyBase + 1);
++	assert(keys.Translate(3, false, false) == 3);
++	for (unsigned key = 0; key < 0x100; key++) {
++		if (key >= 2 && key <= 13)
++			continue;
++		assert(keys.Translate(key, true, false) == key);
++		assert(keys.Translate(key, false, true) == key);
++	}
++	assert(keys.Translate(0xc00e9, true, false) == 0xc00e9);
++	puts("PASS: all F1-F12 mappings, Fn order/repeat/release, simultaneous keys, ordinary/consumer "
++		 "keys");
++}
